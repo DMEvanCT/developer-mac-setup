@@ -1,202 +1,28 @@
----
-# Mac Dev Tools Setup Playbook
-# Usage: ansible-playbook mac_dev_setup.yml -K
-# Requires: ansible installed on the target Mac (pip3 install ansible)
-#
-# NOTE: Arduino Lab for MicroPython is NOT in Homebrew.
-#       It is handled via direct download task at the bottom.
-#       SiliconMotion InstantView requires a kernel extension approval
-#       in System Settings → Privacy & Security after install.
+# developer-mac-setup
+Ansible scripts to set up mac for a developer
 
-- name: Mac Developer Environment Setup
-  hosts: localhost
-  connection: local
-  become: false
+## Prerequisites
 
-  vars:
-    homebrew_prefix: "{{ '/opt/homebrew' if ansible_machine == 'arm64' else '/usr/local' }}"
+Ansible must be installed on your Mac before running any playbook.
+Use the provided helper script to install it:
 
-  tasks:
+```bash
+bash install-ansible.sh
+```
 
-    # ── 1. Xcode Command Line Tools ──────────────────────────────────────────
-    - name: Check if Xcode CLT is installed
-      command: xcode-select -p
-      register: xcode_clt
-      failed_when: false
-      changed_when: false
+The script will:
+1. Check for / install **Xcode Command Line Tools**
+2. Check for / install **Homebrew**
+3. Check for / install **Python 3** (via Homebrew)
+4. Check for / install **pipx** (via Homebrew)
+5. Install **Ansible** in an isolated environment via `pipx`
 
-    - name: Install Xcode Command Line Tools
-      command: xcode-select --install
-      when: xcode_clt.rc != 0
-      register: xcode_install
-      failed_when: false
+## Usage
 
-    - name: Wait for Xcode CLT installation to complete
-      pause:
-        prompt: "If a dialog appeared to install Xcode CLT, complete it then press Enter to continue"
-      when: xcode_install is changed
+After Ansible is installed, run the desired playbook:
 
-    # ── 2. Homebrew ──────────────────────────────────────────────────────────
-    - name: Check if Homebrew is installed
-      stat:
-        path: "{{ homebrew_prefix }}/bin/brew"
-      register: brew_binary
+```bash
+ansible-playbook enhanced-developer-arduino.yml -K
+```
 
-    - name: Install Homebrew
-      shell: |
-        /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-      when: not brew_binary.stat.exists
-      environment:
-        NONINTERACTIVE: "1"
-
-    - name: Add Homebrew to PATH (Apple Silicon)
-      lineinfile:
-        path: "{{ ansible_env.HOME }}/.zprofile"
-        line: 'eval "$(/opt/homebrew/bin/brew shellenv)"'
-        create: true
-      when: ansible_machine == 'arm64'
-
-    - name: Update Homebrew
-      homebrew:
-        update_homebrew: true
-
-    # ── 3. ZSH ───────────────────────────────────────────────────────────────
-    - name: Install zsh via Homebrew (latest version)
-      homebrew:
-        name: zsh
-        state: present
-
-    - name: Get Homebrew zsh path
-      command: "{{ homebrew_prefix }}/bin/brew --prefix zsh"
-      register: zsh_prefix
-      changed_when: false
-
-    - name: Set Homebrew zsh path fact
-      set_fact:
-        brew_zsh: "{{ zsh_prefix.stdout }}/bin/zsh"
-
-    - name: Add Homebrew zsh to /etc/shells
-      lineinfile:
-        path: /etc/shells
-        line: "{{ brew_zsh }}"
-        state: present
-      become: true
-
-    - name: Set Homebrew zsh as default shell
-      command: "chsh -s {{ brew_zsh }} {{ ansible_env.USER }}"
-      when: ansible_env.SHELL != brew_zsh
-      become: true
-
-    # ── 4. Homebrew Casks ────────────────────────────────────────────────────
-    - name: Install Homebrew cask apps
-      homebrew_cask:
-        name: "{{ item }}"
-        state: present
-        greedy: false
-      loop:
-        - firefox             # Mozilla Firefox
-        - kiro                # Kiro AI IDE (Amazon)
-        - claude              # Anthropic Claude desktop app
-        - claude-code         # Claude Code terminal assistant
-        - ghostty             # GPU-accelerated terminal
-        - 1password           # 1Password password manager
-        - bambu-studio        # Bambu Lab 3D slicer (NOTE: "bamboo" → "bambu")
-        - arduino-ide         # Arduino IDE 2.x
-        - instantview         # SiliconMotion InstantView display driver
-        - docker              # Docker Desktop
-      register: cask_results
-      failed_when: false  # Continue even if individual casks fail
-
-    - name: Report any failed cask installs
-      debug:
-        msg: "WARNING: Failed to install {{ item.item }} — {{ item.msg | default('unknown error') }}"
-      loop: "{{ cask_results.results }}"
-      when: item.failed is defined and item.failed
-
-    # ── 5. Arduino Lab for MicroPython (not in Homebrew) ────────────────────
-    - name: Check if Arduino Lab for MicroPython is already installed
-      stat:
-        path: /Applications/Arduino Lab for MicroPython.app
-      register: arduino_lab_installed
-
-    - name: Get latest Arduino Lab for MicroPython release info
-      uri:
-        url: https://api.github.com/repos/arduino/arduino-lab-micropython-ide/releases/latest
-        return_content: true
-      register: arduino_lab_release
-      when: not arduino_lab_installed.stat.exists
-
-    - name: Extract macOS download URL
-      set_fact:
-        arduino_lab_url: >-
-          {{ arduino_lab_release.json.assets
-             | selectattr('name', 'match', '.*macOS.*\\.zip$|.*mac.*\\.zip$|.*darwin.*\\.zip$', ignorecase=True)
-             | map(attribute='browser_download_url')
-             | first }}
-      when:
-        - not arduino_lab_installed.stat.exists
-        - arduino_lab_release is defined
-
-    - name: Download Arduino Lab for MicroPython
-      get_url:
-        url: "{{ arduino_lab_url }}"
-        dest: /tmp/arduino_lab_micropython.zip
-        mode: '0644'
-      when:
-        - not arduino_lab_installed.stat.exists
-        - arduino_lab_url is defined
-
-    - name: Unzip Arduino Lab for MicroPython
-      unarchive:
-        src: /tmp/arduino_lab_micropython.zip
-        dest: /tmp/arduino_lab_extracted/
-        creates: /tmp/arduino_lab_extracted/
-      when:
-        - not arduino_lab_installed.stat.exists
-        - arduino_lab_url is defined
-
-    - name: Move Arduino Lab .app to /Applications
-      shell: |
-        find /tmp/arduino_lab_extracted -name "*.app" -maxdepth 2 \
-          -exec cp -R {} /Applications/ \;
-      when:
-        - not arduino_lab_installed.stat.exists
-        - arduino_lab_url is defined
-
-    - name: Clean up Arduino Lab temp files
-      file:
-        path: "{{ item }}"
-        state: absent
-      loop:
-        - /tmp/arduino_lab_micropython.zip
-        - /tmp/arduino_lab_extracted
-      when: not arduino_lab_installed.stat.exists
-
-    # ── 6. Summary ───────────────────────────────────────────────────────────
-    - name: Installation complete
-      debug:
-        msg: |
-          ✅ Mac dev environment setup complete!
-
-          Installed via Homebrew cask:
-            • Firefox
-            • Kiro IDE
-            • Claude (desktop)
-            • Claude Code
-            • Ghostty
-            • 1Password
-            • Bambu Studio
-            • Arduino IDE
-            • SiliconMotion InstantView
-            • Docker Desktop
-
-          Installed via GitHub release:
-            • Arduino Lab for MicroPython
-
-          ⚠️  Post-install actions required:
-            1. Restart your terminal or run: eval "$({{ homebrew_prefix }}/bin/brew shellenv)"
-            2. SiliconMotion InstantView: approve kernel extension in
-               System Settings → Privacy & Security → Allow
-            3. 1Password: sign in and enable browser extensions
-            4. Kiro: sign in with AWS or social account on first launch
-            5. Docker Desktop: launch once manually to complete setup and accept license
+`-K` prompts for your sudo password, which is required for a small number of tasks (e.g. changing the default shell).
