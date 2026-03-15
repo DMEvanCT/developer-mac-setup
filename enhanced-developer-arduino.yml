@@ -1,28 +1,160 @@
-# developer-mac-setup
-Ansible scripts to set up mac for a developer
+---
+# Mac Dev Tools Setup Playbook
+# Usage: ansible-playbook mac_dev_setup.yml -K
+# Requires: ansible installed on the target Mac (pip3 install ansible)
+#
+# NOTE: Arduino Lab for MicroPython is NOT in Homebrew.
+#       It is handled via direct download task at the bottom.
+#       SiliconMotion InstantView requires a kernel extension approval
+#       in System Settings → Privacy & Security after install.
 
-## Prerequisites
+- name: Mac Developer Environment Setup
+  hosts: localhost
+  connection: local
+  become: false
 
-Ansible must be installed on your Mac before running any playbook.
-Use the provided helper script to install it:
+  vars:
+    homebrew_prefix: "{{ '/opt/homebrew' if ansible_machine == 'arm64' else '/usr/local' }}"
 
-```bash
-bash install-ansible.sh
-```
+  tasks:
 
-The script will:
-1. Check for / install **Xcode Command Line Tools**
-2. Check for / install **Homebrew**
-3. Check for / install **Python 3** (via Homebrew)
-4. Check for / install **pipx** (via Homebrew)
-5. Install **Ansible** in an isolated environment via `pipx`
+    # ── 1. Xcode Command Line Tools ──────────────────────────────────────────
+    - name: Check if Xcode CLT is installed
+      command: xcode-select -p
+      register: xcode_clt
+      failed_when: false
+      changed_when: false
 
-## Usage
+    - name: Install Xcode Command Line Tools
+      command: xcode-select --install
+      when: xcode_clt.rc != 0
+      register: xcode_install
+      failed_when: false
 
-After Ansible is installed, run the desired playbook:
+    - name: Wait for Xcode CLT installation to complete
+      pause:
+        prompt: "If a dialog appeared to install Xcode CLT, complete it then press Enter to continue"
+      when: xcode_install is changed
 
-```bash
-ansible-playbook enhanced-developer-arduino.yml -K
-```
+    # ── 2. Homebrew ──────────────────────────────────────────────────────────
+    - name: Check if Homebrew is installed
+      stat:
+        path: "{{ homebrew_prefix }}/bin/brew"
+      register: brew_binary
 
-`-K` prompts for your sudo password, which is required for a small number of tasks (e.g. changing the default shell).
+    - name: Install Homebrew
+      shell: |
+        /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+      when: not brew_binary.stat.exists
+      environment:
+        NONINTERACTIVE: "1"
+
+    - name: Add Homebrew to PATH (Apple Silicon)
+      lineinfile:
+        path: "{{ ansible_env.HOME }}/.zprofile"
+        line: 'eval "$(/opt/homebrew/bin/brew shellenv)"'
+        create: true
+      when: ansible_machine == 'arm64'
+
+    - name: Update Homebrew
+      homebrew:
+        update_homebrew: true
+
+    # ── 3. ZSH ───────────────────────────────────────────────────────────────
+    - name: Install zsh via Homebrew (latest version)
+      homebrew:
+        name: zsh
+        state: present
+
+    - name: Get Homebrew zsh path
+      command: "{{ homebrew_prefix }}/bin/brew --prefix zsh"
+      register: zsh_prefix
+      changed_when: false
+
+    - name: Set Homebrew zsh path fact
+      set_fact:
+        brew_zsh: "{{ zsh_prefix.stdout }}/bin/zsh"
+
+    - name: Add Homebrew zsh to /etc/shells
+      lineinfile:
+        path: /etc/shells
+        line: "{{ brew_zsh }}"
+        state: present
+      become: true
+
+    - name: Set Homebrew zsh as default shell
+      command: "chsh -s {{ brew_zsh }} {{ ansible_env.USER }}"
+      when: ansible_env.SHELL != brew_zsh
+      become: true
+
+    # ── 4. Homebrew Casks ────────────────────────────────────────────────────
+    - name: Install Homebrew cask apps
+      homebrew_cask:
+        name: "{{ item }}"
+        state: present
+        greedy: false
+      loop:
+        - firefox             # Mozilla Firefox
+        - kiro                # Kiro AI IDE (Amazon)
+        - microsoft-office    # Microsoft 365 (Office apps)
+        - claude              # Anthropic Claude desktop app
+        - claude-code         # Claude Code terminal assistant
+        - ghostty             # GPU-accelerated terminal
+        - 1password           # 1Password password manager
+        - bambu-studio        # Bambu Lab 3D slicer (NOTE: "bamboo" → "bambu")
+        - arduino-ide         # Arduino IDE 2.x
+        - instantview         # SiliconMotion InstantView display driver
+        - docker              # Docker Desktop
+        - visual-studio-code  # Visual studio editor
+        - zoom
+      register: cask_results
+      failed_when: false  # Continue even if individual casks fail
+
+    - name: Install Homebrew cli apps
+      homebrew:
+        name: "{{ item }}"
+        state: present
+        greedy: false
+      loop:
+        - claude             # Mozilla Firefox
+        - gh
+      register: cask_results
+      failed_when: false  # Continue even if individual casks fail
+
+    - name: Report any failed cask installs
+      debug:
+        msg: "WARNING: Failed to install {{ item.item }} — {{ item.msg | default('unknown error') }}"
+      loop: "{{ cask_results.results }}"
+      when: item.failed is defined and item.failed
+
+    # ── 6. Summary ───────────────────────────────────────────────────────────
+    - name: Installation complete
+      debug:
+        msg: |
+          ✅ Mac dev environment setup complete!
+
+          Installed via Homebrew cask:
+            • Firefox
+            • Kiro IDE
+            • Microsoft 365 (Office)
+            • Claude (desktop)
+            • Claude Code
+            • Ghostty
+            • 1Password
+            • Bambu Studio
+            • Arduino IDE
+            • SiliconMotion InstantView
+            • Docker Desktop
+            • Visual Studio Code
+            • Zoom
+
+          Installed via GitHub release:
+            • Arduino Lab for MicroPython
+
+          ⚠️  Post-install actions required:
+            1. Restart your terminal or run: eval "$({{ homebrew_prefix }}/bin/brew shellenv)"
+            2. SiliconMotion InstantView: approve kernel extension in
+               System Settings → Privacy & Security → Allow
+            3. 1Password: sign in and enable browser extensions
+            4. Kiro: sign in with AWS or social account on first launch
+            5. Docker Desktop: launch once manually to complete setup and accept license
