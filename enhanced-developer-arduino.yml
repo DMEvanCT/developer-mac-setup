@@ -49,12 +49,11 @@
       environment:
         NONINTERACTIVE: "1"
 
-    - name: Add Homebrew to PATH (Apple Silicon)
+    - name: Add Homebrew to PATH
       lineinfile:
         path: "{{ ansible_env.HOME }}/.zprofile"
-        line: 'eval "$(/opt/homebrew/bin/brew shellenv)"'
+        line: 'eval "$({{ homebrew_prefix }}/bin/brew shellenv)"'
         create: true
-      when: ansible_machine == 'arm64'
 
     - name: Update Homebrew
       homebrew:
@@ -87,6 +86,20 @@
       when: ansible_env.SHELL != brew_zsh
       become: true
 
+    # ── 3b. Oh My Zsh ────────────────────────────────────────────────────────
+    - name: Check if Oh My Zsh is installed
+      stat:
+        path: "{{ ansible_env.HOME }}/.oh-my-zsh"
+      register: ohmyzsh_dir
+
+    - name: Install Oh My Zsh
+      shell: >
+        sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+        "" --unattended
+      environment:
+        SHELL: "{{ brew_zsh }}"
+      when: not ohmyzsh_dir.stat.exists
+
     # ── 4. Homebrew Casks ────────────────────────────────────────────────────
     - name: Install Homebrew cask apps
       homebrew_cask:
@@ -96,7 +109,6 @@
       loop:
         - firefox             # Mozilla Firefox
         - kiro                # Kiro AI IDE (Amazon)
-        - microsoft-office    # Microsoft 365 (Office apps)
         - claude              # Anthropic Claude desktop app
         - claude-code         # Claude Code terminal assistant
         - ghostty             # GPU-accelerated terminal
@@ -104,21 +116,46 @@
         - bambu-studio        # Bambu Lab 3D slicer (NOTE: "bamboo" → "bambu")
         - arduino-ide         # Arduino IDE 2.x
         - instantview         # SiliconMotion InstantView display driver
-        - docker              # Docker Desktop
         - visual-studio-code  # Visual studio editor
         - zoom
       register: cask_results
       failed_when: false  # Continue even if individual casks fail
 
+    - name: Allow passwordless /usr/sbin/installer (required for pkg-based casks)
+      copy:
+        content: "{{ ansible_env.USER }} ALL=(root) NOPASSWD:SETENV: /usr/sbin/installer\n"
+        dest: /etc/sudoers.d/ansible-brew-installer
+        mode: '0440'
+        validate: 'visudo -cf %s'
+      become: true
+
+    - name: Install Microsoft Office
+      shell: "{{ homebrew_prefix }}/bin/brew install --cask microsoft-office"
+      register: msoffice_result
+      changed_when: "'already installed' not in msoffice_result.stdout"
+      failed_when: msoffice_result.rc != 0
+
+    - name: Install Docker Desktop
+      shell: "{{ homebrew_prefix }}/bin/brew install --cask docker"
+      register: docker_result
+      changed_when: "'already installed' not in docker_result.stdout"
+      failed_when: docker_result.rc != 0
+
+    - name: Remove passwordless installer rule
+      file:
+        path: /etc/sudoers.d/ansible-brew-installer
+        state: absent
+      become: true
+
     - name: Install Homebrew cli apps
       homebrew:
         name: "{{ item }}"
         state: present
-        greedy: false
       loop:
-        - claude             # Mozilla Firefox
+        - claude
         - gh
-      register: cask_results
+        - nvchad
+      register: brew_results
       failed_when: false  # Continue even if individual casks fail
 
     - name: Report any failed cask installs
