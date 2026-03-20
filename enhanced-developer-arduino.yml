@@ -121,10 +121,10 @@
       register: cask_results
       failed_when: false  # Continue even if individual casks fail
 
-    - name: Allow passwordless /usr/sbin/installer (required for pkg-based casks)
+    - name: Allow temporary passwordless sudo (required for pkg-based casks)
       copy:
-        content: "{{ ansible_env.USER }} ALL=(root) NOPASSWD:SETENV: /usr/sbin/installer\n"
-        dest: /etc/sudoers.d/ansible-brew-installer
+        content: "{{ ansible_env.USER }} ALL=(ALL) NOPASSWD:SETENV: ALL\n"
+        dest: /etc/sudoers.d/ansible-brew-temp
         mode: '0440'
         validate: 'visudo -cf %s'
       become: true
@@ -141,9 +141,9 @@
       changed_when: "'already installed' not in docker_result.stdout"
       failed_when: docker_result.rc != 0
 
-    - name: Remove passwordless installer rule
+    - name: Remove temporary passwordless sudo rule
       file:
-        path: /etc/sudoers.d/ansible-brew-installer
+        path: /etc/sudoers.d/ansible-brew-temp
         state: absent
       become: true
 
@@ -155,6 +155,10 @@
         - claude
         - gh
         - nvchad
+        - helm
+        - kubectl
+        - awscli
+        - opentofu
       register: brew_results
       failed_when: false  # Continue even if individual casks fail
 
