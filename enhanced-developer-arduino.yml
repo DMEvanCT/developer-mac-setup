@@ -118,6 +118,7 @@
         - instantview         # SiliconMotion InstantView display driver
         - visual-studio-code  # Visual studio editor
         - zoom
+        - home-assistant
       register: cask_results
       failed_when: false  # Continue even if individual casks fail
 
