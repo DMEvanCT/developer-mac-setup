@@ -1,0 +1,62 @@
+---
+# Ensures a Homebrew cask is genuinely installed, not just registered.
+#
+# Ansible's homebrew_cask module (and plain `brew install --cask`) both
+# check the Caskroom receipt to decide whether a cask is "already
+# installed" and skip if so. If the app was ever manually dragged to the
+# Trash instead of removed via `brew uninstall --cask`, that receipt
+# sticks around and every future run silently no-ops — even though the
+# app is gone. This looks up each cask's real artifact path(s) via
+# `brew info --json=v2`, checks whether they actually exist on disk, and
+# clears the stale receipt before handing off to the normal install task.
+#
+# Expects `cask_name` (loop var) and `homebrew_prefix` from the caller.
+
+- name: "Look up artifact info for {{ cask_name }}"
+  command: "{{ homebrew_prefix }}/bin/brew info --cask {{ cask_name }} --json=v2"
+  register: cask_info_raw
+  changed_when: false
+
+- name: "Resolve expected artifact paths for {{ cask_name }}"
+  set_fact:
+    cask_check_paths: >-
+      {{
+        ((cask_info_raw.stdout | from_json).casks[0].artifacts
+          | selectattr('app', 'defined') | map(attribute='target') | list)
+        or
+        ((cask_info_raw.stdout | from_json).casks[0].artifacts
+          | selectattr('binary', 'defined') | map(attribute='target') | list)
+      }}
+
+- name: "Check on-disk presence of {{ cask_name }}'s artifacts"
+  stat:
+    path: "{{ item }}"
+  loop: "{{ cask_check_paths }}"
+  register: cask_artifact_stats
+  when: cask_check_paths | length > 0
+
+- name: "Check if {{ cask_name }} is registered in Homebrew"
+  command: "{{ homebrew_prefix }}/bin/brew list --cask {{ cask_name }}"
+  register: cask_registered
+  failed_when: false
+  changed_when: false
+
+- name: "Clear stale Caskroom metadata for {{ cask_name }} (registered but artifacts missing)"
+  command: "{{ homebrew_prefix }}/bin/brew uninstall --cask {{ cask_name }} --force"
+  when:
+    - cask_registered.rc == 0
+    - cask_check_paths | length > 0
+    - cask_artifact_stats.results | selectattr('stat.exists', 'equalto', false) | list | length > 0
+
+- name: "Install {{ cask_name }}"
+  homebrew_cask:
+    name: "{{ cask_name }}"
+    state: present
+    greedy: false
+  register: cask_install_result
+  failed_when: false
+
+- name: "Report failure installing {{ cask_name }}"
+  debug:
+    msg: "WARNING: Failed to install {{ cask_name }} — {{ cask_install_result.msg | default('unknown error') }}"
+  when: cask_install_result is failed

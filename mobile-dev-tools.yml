@@ -1,0 +1,138 @@
+---
+# Mobile & JVM Dev Tools Setup Playbook
+# Usage: ansible-playbook mobile-dev-tools.yml -K
+# Requires: ansible installed on the target Mac (see install-ansible.sh)
+#
+# NOTE: Full Xcode.app is installed via the Mac App Store using `mas`.
+#       You must already be signed into the App Store with an Apple ID
+#       (open the App Store app once and sign in) before running this,
+#       otherwise the `mas install` task will fail. Recent versions of
+#       `mas` (Apple deprecated the private API it used) can no longer
+#       report sign-in status via `mas account`, so this can't be
+#       verified up front — the install task below fails with guidance
+#       instead.
+
+- name: Mobile & JVM Developer Tools Setup
+  hosts: localhost
+  connection: local
+  become: false
+
+  vars:
+    homebrew_prefix: "{{ '/opt/homebrew' if ansible_machine == 'arm64' else '/usr/local' }}"
+    xcode_app_store_id: "497799835"
+    mobile_casks:
+      - android-studio
+
+  tasks:
+
+    # ── 0. Accept Xcode/CLT license (Homebrew refuses to run until this is
+    #      accepted, even before full Xcode is installed) ────────────────────
+    - name: Accept Xcode/Command Line Tools license if present
+      command: xcodebuild -license accept
+      become: true
+      register: license_accept
+      failed_when: false
+      changed_when: license_accept.rc == 0
+
+    # ── 1. Homebrew cask apps ────────────────────────────────────────────────
+    # See tasks/ensure_cask_installed.yml — reconciles stale Caskroom
+    # metadata (e.g. an app manually trashed) before installing.
+    - name: Ensure Homebrew cask apps are genuinely installed
+      include_tasks: tasks/ensure_cask_installed.yml
+      loop: "{{ mobile_casks }}"
+      loop_control:
+        loop_var: cask_name
+
+    # ── 2.  Xcode (via Mac App Store) ─────────────────────────────────────────
+    - name: Install mas (Mac App Store CLI)
+      homebrew:
+        name: mas
+        state: present
+
+    - name: Install Xcode from the Mac App Store
+      block:
+        - name: Run mas install for Xcode
+          command: "{{ homebrew_prefix }}/bin/mas install {{ xcode_app_store_id }}"
+          register: xcode_install
+          changed_when: "'Installed' in xcode_install.stdout"
+          failed_when: xcode_install.rc != 0 and 'already installed' not in xcode_install.stdout
+      rescue:
+        - name: Fail with guidance if the Xcode install failed
+          fail:
+            msg: >
+              Failed to install Xcode from the Mac App Store
+              (mas exit {{ xcode_install.rc }}):
+              {{ xcode_install.stderr | default(xcode_install.stdout) | default('no output') }}
+              This usually means you're not signed into the App Store —
+              open the App Store app, sign in with your Apple ID, then
+              re-run this playbook.
+
+    - name: Switch active developer directory to full Xcode
+      command: xcode-select --switch /Applications/Xcode.app/Contents/Developer
+      become: true
+
+    - name: Accept Xcode license
+      command: xcodebuild -license accept
+      become: true
+
+    # ── 3. JDK (OpenJDK) ─────────────────────────────────────────────────────
+    - name: Install OpenJDK
+      homebrew:
+        name: openjdk
+        state: present
+
+    - name: Symlink OpenJDK into the system JVM search path
+      file:
+        src: "{{ homebrew_prefix }}/opt/openjdk/libexec/openjdk.jdk"
+        dest: /Library/Java/JavaVirtualMachines/openjdk.jdk
+        state: link
+        force: true
+      become: true
+
+    # ── 4. Latest Python ─────────────────────────────────────────────────────
+    - name: Install latest Python
+      homebrew:
+        name: python
+        state: latest
+
+    # ── 5. Node.js, Watchman & Expo tooling ──────────────────────────────────
+    - name: Install Node.js
+      homebrew:
+        name: node
+        state: present
+
+    - name: Install Watchman
+      homebrew:
+        name: watchman
+        state: present
+
+    - name: Install expo-cli and eas-cli globally via npm
+      npm:
+        name: "{{ item }}"
+        global: true
+        state: present
+      loop:
+        - expo-cli
+        - eas-cli
+
+    # ── 6. Summary ────────────────────────────────────────────────────────────
+    - name: Installation complete
+      debug:
+        msg: |
+          ✅ Mobile & JVM dev tools setup complete!
+
+          Installed:
+            • Android Studio
+            • Xcode (via Mac App Store, id {{ xcode_app_store_id }})
+            • OpenJDK
+            • Python (latest)
+            • Node.js
+            • Watchman
+            • expo-cli / eas-cli (global npm)
+
+          ⚠️  Post-install actions required:
+            1. Launch Xcode once manually to accept any remaining first-run
+               prompts and let it install additional components.
+            2. Launch Android Studio once manually to complete the setup
+               wizard (SDK, AVD, etc.).
+            3. `eas login` to authenticate eas-cli with your Expo account.
