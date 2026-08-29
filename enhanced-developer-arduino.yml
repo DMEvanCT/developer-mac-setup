@@ -29,6 +29,8 @@
       - zoom
       - home-assistant
       - nordvpn
+      - signal 
+      - brave-browser
 
   tasks:
 
@@ -184,7 +186,8 @@
             • Docker Desktop
             • Visual Studio Code
             • Zoom
-
+            • Brave
+            • Signal
           Installed via GitHub release:
             • Arduino Lab for MicroPython
 
